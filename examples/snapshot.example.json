@@ -1,0 +1,13 @@
+{
+  "groups": {
+    "00000000-0000-0000-0000-000000000001": {
+      "members": [
+        {"id": "u-1", "mail": "alice@example.com", "userPrincipalName": "alice@example.com", "accountEnabled": true},
+        {"id": "u-2", "mail": null, "userPrincipalName": "bob@example.com", "accountEnabled": true}
+      ],
+      "owners": [
+        {"id": "u-3", "mail": "carol@example.com", "userPrincipalName": "carol@example.com", "accountEnabled": true}
+      ]
+    }
+  }
+}

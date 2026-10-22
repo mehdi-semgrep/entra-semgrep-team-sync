@@ -1,0 +1,25 @@
+{
+  "deployment_id": 12345,
+  "remove_unlisted": true,
+  "max_removals": 25,
+  "protect_emails": ["breakglass-admin@example.com"],
+  "mappings": [
+    {
+      "entra_group_id": "00000000-0000-0000-0000-000000000001",
+      "team": "Platform Engineering",
+      "members_role": "member",
+      "owners_role": "manager"
+    },
+    {
+      "entra_group_id": "00000000-0000-0000-0000-000000000002",
+      "team": "Platform Engineering",
+      "members_role": "readonly",
+      "owners_role": null
+    },
+    {
+      "entra_group_id": "00000000-0000-0000-0000-000000000003",
+      "team": "ML Research",
+      "create_team": true
+    }
+  ]
+}
