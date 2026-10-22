@@ -3,8 +3,9 @@
 Credentials come from environment variables only:
   SEMGREP_API_TOKEN                                   (Semgrep token with Web API access)
   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET (Entra app registration)
+  AZURE_GRAPH_ACCESS_TOKEN   (testing only: use a ready Graph token instead of the app)
 
-Exit codes: 0 ok, 1 team errors / failed or unverified writes, 2 usage or config
+Exit codes: 0 ok, 1 team errors / failed, rejected or unverified writes, 2 usage or config
 error, 3 removal guard tripped (nothing written).
 """
 
@@ -33,7 +34,12 @@ def _env(name: str) -> str:
 def _entra_source(args):
     if args.entra_snapshot:
         return SnapshotSource(Path(args.entra_snapshot))
-    return GraphSource(_env("AZURE_TENANT_ID"), _env("AZURE_CLIENT_ID"), _env("AZURE_CLIENT_SECRET"))
+    page_size = args.graph_page_size
+    # Testing only: a ready Graph token (e.g. from the az CLI) instead of app credentials.
+    token = os.environ.get("AZURE_GRAPH_ACCESS_TOKEN", "").strip()
+    if token:
+        return GraphSource(access_token=token, page_size=page_size)
+    return GraphSource(_env("AZURE_TENANT_ID"), _env("AZURE_CLIENT_ID"), _env("AZURE_CLIENT_SECRET"), page_size=page_size)
 
 
 def _print_plan(plan: Plan) -> None:
@@ -98,6 +104,7 @@ def run(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--config", required=True, help="mapping file (JSON)")
         p.add_argument("--entra-snapshot", help="read Entra groups from this snapshot file instead of Microsoft Graph")
+        p.add_argument("--graph-page-size", type=int, default=999, help=argparse.SUPPRESS)  # testing: force paging
         if name != "snapshot":
             p.add_argument("--semgrep-url", default="https://semgrep.dev")
             p.add_argument("--json-out", help="also write the plan as JSON to this file")
@@ -145,7 +152,13 @@ def run(argv: list[str] | None = None) -> int:
         print(f"FAILED: {f}", file=sys.stderr)
     for d in result.drift:
         print(f"VERIFY MISMATCH: {d}", file=sys.stderr)
-    return 1 if (has_errors or result.failed or result.drift) else 0
+    if result.rejected:
+        print(
+            "Not added (Semgrep says they are not deployment members; check their SSO/SCIM account): "
+            + ", ".join(sorted(e or str(u) for u, e in result.rejected.items())),
+            file=sys.stderr,
+        )
+    return 1 if (has_errors or result.failed or result.drift or result.rejected) else 0
 
 
 def main() -> None:

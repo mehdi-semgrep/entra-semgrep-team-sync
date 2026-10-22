@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from entra_team_sync.config import API_ROLE, ROLE_FROM_API, ROLE_PRIORITY, Config, Mapping
 from entra_team_sync.entra import GroupSnapshot
-from entra_team_sync.semgrep import SemgrepApi, Team, UserAction
+from entra_team_sync.semgrep import MAX_USER_ACTIONS_PER_REQUEST, NotDeploymentMember, SemgrepApi, Team, UserAction
 
 UPDATE = "UPDATE_ACTION_UPDATE"
 REMOVE = "UPDATE_ACTION_REMOVE"
@@ -205,6 +205,30 @@ class ApplyResult:
     applied: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     drift: list[str] = field(default_factory=list)
+    # Users Semgrep refused to add because they are not deployment members, even
+    # though the user list returned them (the two come from different queries).
+    rejected: dict[int, str] = field(default_factory=dict)  # user id -> email
+
+
+def _send(api: SemgrepApi, team_id: int, changes: list[Change], rejected: dict[int, str]) -> None:
+    """Send changes, isolating users Semgrep rejects as non-members.
+
+    A rejected request applies nothing, so on that error the batch is split in
+    half and retried until the offending users are alone; they are recorded and
+    everyone else goes through. One bad user costs about 2*log2(batch) extra calls.
+    """
+    changes = [c for c in changes if not (c.new_role is not None and c.user_id in rejected)]
+    if not changes:
+        return
+    try:
+        api.apply_user_actions(team_id, [c.action for c in changes])
+    except NotDeploymentMember:
+        if len(changes) == 1:
+            rejected[changes[0].user_id] = changes[0].email
+            return
+        mid = len(changes) // 2
+        _send(api, team_id, changes[:mid], rejected)
+        _send(api, team_id, changes[mid:], rejected)
 
 
 def apply_plan(plan: Plan, api: SemgrepApi) -> ApplyResult:
@@ -219,15 +243,24 @@ def apply_plan(plan: Plan, api: SemgrepApi) -> ApplyResult:
                 # Removals and role changes first, then additions: keeps a user from
                 # briefly holding two roles if the API ever processes them in order.
                 ordered = sorted(tp.changes, key=lambda c: c.old_role is None)
-                api.apply_user_actions(tp.team.id, [c.action for c in ordered])
+                for i in range(0, len(ordered), MAX_USER_ACTIONS_PER_REQUEST):
+                    _send(api, tp.team.id, ordered[i : i + MAX_USER_ACTIONS_PER_REQUEST], result.rejected)
             result.applied.append(tp.label)
         except Exception as e:  # noqa: BLE001 - keep going with other teams
             result.failed.append(f"{tp.label}: {e}")
             continue
 
+        expected = dict(tp.expected)
+        for c in tp.changes:
+            if c.new_role is not None and c.user_id in result.rejected:
+                # Not applied: the user keeps their previous state.
+                if c.old_role is None:
+                    expected.pop(c.user_id, None)
+                else:
+                    expected[c.user_id] = c.old_role
         after = {uid: ROLE_FROM_API.get(r, r) for uid, r in api.list_members(tp.team.id).items()}
-        if after != tp.expected:
-            missing = {u: r for u, r in tp.expected.items() if after.get(u) != r}
-            extra = {u: r for u, r in after.items() if u not in tp.expected}
+        if after != expected:
+            missing = {u: r for u, r in expected.items() if after.get(u) != r}
+            extra = {u: r for u, r in after.items() if u not in expected}
             result.drift.append(f"{tp.label}: expected-but-missing={missing} unexpected={extra}")
     return result

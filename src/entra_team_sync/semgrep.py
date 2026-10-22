@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from entra_team_sync import http
+from entra_team_sync.http import ApiError
 
 # API limits (teams.proto validators): team PATCH takes at most 500 user actions,
 # team listing at most 100 per page, member listing at most 3000 per page.
@@ -15,6 +16,13 @@ TEAMS_PAGE_SIZE = 100
 MEMBERS_PAGE_SIZE = 1000
 # The user listing has no documented cap; stay at the server's default page size.
 USERS_PAGE_SIZE = 100
+
+
+class NotDeploymentMember(Exception):
+    """The PATCH was rejected because a user being added is not a deployment member.
+
+    Semgrep rejects the whole request in that case and applies nothing.
+    """
 
 
 @dataclass(frozen=True)
@@ -103,10 +111,14 @@ class SemgrepApi:
                 return members
 
     def apply_user_actions(self, team_id: int, actions: list[UserAction]) -> None:
-        for i in range(0, len(actions), MAX_USER_ACTIONS_PER_REQUEST):
-            batch = actions[i : i + MAX_USER_ACTIONS_PER_REQUEST]
+        """One PATCH; callers keep batches at or below MAX_USER_ACTIONS_PER_REQUEST."""
+        try:
             self._call(
                 "PATCH",
                 f"/api/permissions/v2/deployments/{self.deployment_id}/teams/{team_id}",
-                json={"team": {"users": [a.to_json() for a in batch]}},
+                json={"team": {"users": [a.to_json() for a in actions]}},
             )
+        except ApiError as e:
+            if e.status == 400 and "must be members of the deployment" in e.body:
+                raise NotDeploymentMember(e.body) from e
+            raise

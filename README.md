@@ -20,6 +20,7 @@ Only actual differences are sent, so running it every few minutes is safe.
 ## Safety behaviour
 
 - **Unprovisioned users:** people who don't have a Semgrep account yet are listed and skipped. They're added on a later run, once SCIM has created them.
+- **Rejected users:** Semgrep occasionally refuses to add a listed user. The users list and Semgrep's membership check use different queries, and can disagree after the deployment's SSO provider is reconfigured. One refused user rejects the whole request, so the tool splits it in half until it finds the refused users and applies everyone else. It then skips those users for the rest of the run and lists them at the end. A single refused user costs about 15 extra requests in a 500-user batch.
 - **Removal limit:** if a run would remove more than `max_removals` memberships across all teams, `apply` stops without writing anything (exit code 3).
 - **Empty groups:** if a group returns nobody, that team gets additions only and no removals. An empty result is more often a permission or sync problem than a real change.
 - **Unreadable groups:** if a group can't be read, its team is skipped entirely. Other teams still sync.
@@ -74,7 +75,7 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | A team error, a failed write, or a team that didn't verify after apply |
+| 1 | A team error, a failed write, a user Semgrep refused to add, or a team that didn't verify after apply |
 | 2 | Configuration or environment problem |
 | 3 | Removal limit hit; nothing was written |
 
@@ -90,6 +91,12 @@ Run `apply` on a schedule, for example every 15–60 minutes, from any of these:
 - cron
 
 Keep the secrets in the scheduler's secret store. Membership changes in Entra appear in Semgrep on the next run.
+
+### Testing against a real Entra tenant
+
+[`testing/`](testing/README.md) has scripts that create and remove test users, groups and an app registration in a test tenant, plus a runbook with the expected results.
+
+For a quick read-only check with your own Azure CLI sign-in, set `AZURE_GRAPH_ACCESS_TOKEN` (for example from `az account get-access-token --resource-type ms-graph`). The tool then uses that token instead of an app secret. This is for testing only; scheduled runs should use the app registration.
 
 ## Notes on the Semgrep API
 
@@ -109,6 +116,8 @@ Behaviour the tool relies on:
 - A single unknown user ID rejects the whole request, so the tool never sends one.
 - The team's stored member count is updated from the requested actions, not the ones applied. That's why only real differences are sent.
 - The `GET .../status` RBAC flag isn't reliable as a pre-check. The tool calls the Teams API directly.
+- Listing teams accepts at most 100 per page; listing team members accepts at most 3000.
+- A user created through SCIM counts as a deployment member, and can be added to teams, before they ever sign in. SCIM creates both the deployment membership and the link to the deployment's SSO provider.
 
 ## Development
 

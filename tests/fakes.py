@@ -27,6 +27,10 @@ class FakeSemgrep:
         self._next_team = 100
         self.page_size_override: int | None = None
         self.drop_writes = False  # simulate a write that returns 200 but changes nothing
+        # Listed as deployment users but refused by the membership check (e.g. the
+        # deployment's SSO provider changed since they were provisioned).
+        self.not_members: set[int] = set()
+        self.patch_error: str | None = None  # any other 400 on every PATCH
 
     def add_team(self, name: str, scim_managed: bool = False, default: bool = False, members=None) -> int:
         tid = self._next_team
@@ -83,8 +87,11 @@ class FakeSemgrep:
         if len(actions) > 500:
             return httpx.Response(400, json={"error": "Updating more than 500 users in a request is not allowed"})
         self.patch_calls.append(actions)
+        if self.patch_error:
+            return httpx.Response(400, json={"error": self.patch_error})
         for a in actions:
-            if a["action"] == "UPDATE_ACTION_UPDATE" and int(a["user_id"]) not in self.users:
+            uid = int(a["user_id"])
+            if a["action"] == "UPDATE_ACTION_UPDATE" and (uid not in self.users or uid in self.not_members):
                 return httpx.Response(400, json={"error": "User(s) must be members of the deployment"})
         if self.drop_writes:
             return httpx.Response(200, json={"team": self.teams[tid]})

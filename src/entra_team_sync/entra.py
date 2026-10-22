@@ -49,12 +49,24 @@ def _to_user(raw: dict) -> EntraUser:
 
 
 class GraphSource:
-    def __init__(self, tenant_id: str, client_id: str, client_secret: str, client: httpx.Client | None = None):
+    def __init__(
+        self,
+        tenant_id: str = "",
+        client_id: str = "",
+        client_secret: str = "",
+        client: httpx.Client | None = None,
+        *,
+        access_token: str | None = None,
+        page_size: int = 999,
+    ):
+        """App-only auth from tenant/client/secret, or a ready Graph `access_token`
+        (testing only, e.g. from `az account get-access-token --resource-type ms-graph`)."""
         self._client = client or httpx.Client(timeout=30)
         self._tenant_id = tenant_id
         self._client_id = client_id
         self._client_secret = client_secret
-        self._token: str | None = None
+        self._token: str | None = access_token
+        self._page_size = page_size
 
     def _auth_header(self) -> dict[str, str]:
         if self._token is None:
@@ -75,7 +87,7 @@ class GraphSource:
     def _list_users(self, url: str) -> list[EntraUser]:
         users = []
         next_url: str | None = url
-        params: dict | None = {"$select": USER_FIELDS, "$top": "999"}
+        params: dict | None = {"$select": USER_FIELDS, "$top": str(self._page_size)}
         while next_url:
             resp = http.request(self._client, "GET", next_url, params=params, headers=self._auth_header())
             body = resp.json()

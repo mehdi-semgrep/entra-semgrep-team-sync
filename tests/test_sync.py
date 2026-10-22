@@ -264,6 +264,67 @@ def test_verify_reports_drift(fake, api):
     assert result.drift and "expected-but-missing" in result.drift[0]
 
 
+# --- users Semgrep refuses to add ---------------------------------------------
+
+
+def _many(n, start=1000):
+    return {start + i: f"user{i}@example.test" for i in range(n)}
+
+
+def test_one_rejected_user_does_not_block_the_rest(fake, api):
+    fake.users.update(_many(100))
+    fake.not_members = {1042}
+    tid = fake.add_team("Big")
+    members = [graph_user(f"u{i}", f"user{i}@example.test") for i in range(100)]
+    plan = build_plan(cfg([{"entra_group_id": "g", "team": "Big"}]), api, FakeSource({"g": {"members": members}}).group)
+
+    result = apply_plan(plan, api)
+
+    assert result.rejected == {1042: "user42@example.test"}
+    assert len(fake.members[tid]) == 99 and 1042 not in fake.members[tid]
+    assert result.drift == [] and result.failed == []
+    # 1 rejected full batch + bisection, not 100 one-by-one calls
+    assert len(fake.patch_calls) <= 2 * 7 + 1
+
+
+def test_rejected_user_is_skipped_up_front_in_later_teams(fake, api):
+    fake.not_members = {BOB}
+    t1, t2 = fake.add_team("Platform"), fake.add_team("Security")
+    source = FakeSource({"g": {"members": [graph_user("a", "alice@example.test"), graph_user("b", "bob@example.test")]}})
+    config = cfg([{"entra_group_id": "g", "team": "Platform"}, {"entra_group_id": "g", "team": "Security"}])
+
+    result = apply_plan(build_plan(config, api, source.group), api)
+
+    assert result.rejected == {BOB: "bob@example.test"}
+    assert roles(fake, t1) == roles(fake, t2) == {ALICE: "member"}
+    # first team: rejected batch, then [alice] ok, [bob] rejected = 3 calls;
+    # second team already knows bob is rejected: [alice] only = 1 call
+    assert len(fake.patch_calls) == 4
+    assert fake.patch_calls[-1] == [{"user_id": str(ALICE), "action": "UPDATE_ACTION_UPDATE", "role": "TEAM_ROLE_MEMBER"}]
+
+
+def test_rejected_role_change_keeps_old_role_without_drift(fake, api):
+    fake.not_members = {BOB}
+    tid = fake.add_team("Platform", members={BOB: "TEAM_ROLE_MEMBER", DAVE: "TEAM_ROLE_MEMBER"})
+    source = FakeSource({"g": {"owners": [graph_user("b", "bob@example.test")], "members": []}})
+    # owners only -> bob should become manager; dave is removed
+    config = cfg([{"entra_group_id": "g", "team": "Platform", "members_role": None}])
+
+    result = apply_plan(build_plan(config, api, source.group), api)
+
+    assert result.rejected == {BOB: "bob@example.test"}
+    assert roles(fake, tid) == {BOB: "member"}  # removal of dave still applied
+    assert result.drift == []
+
+
+def test_other_400s_still_fail_the_team(fake, api):
+    fake.add_team("Platform")
+    fake.patch_error = "nope"
+    source = FakeSource({"g": {"members": [graph_user("a", "alice@example.test")]}})
+    result = apply_plan(build_plan(cfg([{"entra_group_id": "g", "team": "Platform"}]), api, source.group), api)
+    assert result.failed and "nope" in result.failed[0] and result.rejected == {}
+
+
 # --- config --------------------------------------------------------------------
 
 

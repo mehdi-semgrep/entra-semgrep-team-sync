@@ -101,3 +101,19 @@ def test_cli_snapshot_writes_groups(tmp_path):
     out = tmp_path / "out.json"
     assert cli.run(["snapshot", "--config", config, "--entra-snapshot", src, "--out", str(out)]) == 0
     assert json.loads(out.read_text())["groups"]["g"]["members"][0]["mail"] == "a@x.test"
+
+
+@respx.mock
+def test_graph_with_ready_token_skips_login_and_honours_page_size():
+    token = respx.post(TOKEN_URL)
+    members = respx.get(f"{GRAPH}/groups/g1/transitiveMembers/microsoft.graph.user").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    respx.get(f"{GRAPH}/groups/g1/owners/microsoft.graph.user").mock(return_value=httpx.Response(200, json={"value": []}))
+
+    GraphSource(access_token="az-token", page_size=50, client=httpx.Client()).group("g1")
+
+    assert token.call_count == 0
+    req = members.calls[0].request
+    assert req.headers["Authorization"] == "Bearer az-token"
+    assert req.url.params["$top"] == "50"
